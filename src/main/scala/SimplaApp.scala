@@ -15,7 +15,12 @@ class SimpleKMeans(xK: Int, xNumIters: Int, xPoints: RDD[Array[Double]]) extends
   var centroids = points.take(k).toArray
   var iteration = 0
   val dims = centroids(0).length
+  val absolute_start = System.currentTimeMillis
 
+  var hack = System.currentTimeMillis
+  var totalIterTime = hack - hack
+  println("should be zero")
+  println(totalIterTime)
   // Helper functions:
   // Accumulate sums and counts for each centroid
   type WeightedPoint = (DoubleMatrix, Long)
@@ -42,6 +47,7 @@ class SimpleKMeans(xK: Int, xNumIters: Int, xPoints: RDD[Array[Double]]) extends
   def run() {
     // Run kmeans for a fixed number of iterations
     while (iteration < numIterations) {
+      val start = System.currentTimeMillis
       // Assignment:
       // Assign each point to the closest centroid
       // Accumulating a sum and count per centroid
@@ -71,9 +77,19 @@ class SimpleKMeans(xK: Int, xNumIters: Int, xPoints: RDD[Array[Double]]) extends
 
       }
       iteration += 1
-
+      val end  = System.currentTimeMillis
+      val elapsed = end - start
+      totalIterTime += elapsed
     }
-
+    val absolute_end = System.currentTimeMillis
+    println("Total time after loading: ")
+    println(absolute_end - absolute_start)
+    println("Average iteration time")
+    println(totalIterTime / numIterations) 
+    println("Centroids:")
+    for (centroid <- centroids) {
+      println(centroid.mkString(",")) 
+    }
   }
 
 }
@@ -83,15 +99,15 @@ object SimpleApp {
     val conf = new SparkConf()
              .setMaster("spark://192.168.0.40:7070")
              .setAppName("Simple App")
-             .setJars(List("/kmeans/target/scala-2.10/simple-project_2.10-1.0.jar"))
+             .setJars(List("/SparkKMeans/target/scala-2.10/simple-project_2.10-1.0.jar"))
              .setSparkHome("/software/spark-0.9.1")
-             .set("spark.executor.memory", "1g")
-             .set("spark.cores.max", "2")
+             .set("spark.executor.memory", "65g")
+             .set("spark.cores.max", "1")
     val sc = new SparkContext(conf)
 
     val filePath = "hdfs://192.168.0.40:54310/josh/foo.csv"
     val points = sc.textFile(filePath).map( _.split(',').map(_.toDouble)).cache()
-    val model = new SimpleKMeans(2, 10, points)
+    val model = new SimpleKMeans(5, 10, points)
     model.run
 
   }
