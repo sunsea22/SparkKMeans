@@ -1,86 +1,82 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 
-import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.mllib.util.MLUtils
 import org.jblas.DoubleMatrix
 
-class SimpleSGD(xNumIters: Int, xPoints: RDD[LabeledPoint]) extends Serializable {
+class SimpleKMeans(xK: Int, xNumIters: Int, xPoints: RDD[Array[Double]]) extends Serializable {
   // Setup
+  var k = xK
+  var numIterations = xNumIters
   var points = xPoints
-  var numIters = xNumIters
-  val lambda = .1
-  var alpha = .1
- 
-  var first = points.take(1).toArray
-  val dims = first(0).features.length
-  var params = new DoubleMatrix(dims)
-  val absolute_start = System.currentTimeMillis
- 
+  
+  var centroids = points.take(k).toArray
   var iteration = 0
+  val dims = centroids(0).length
+  val absolute_start = System.currentTimeMillis
+
   var hack = System.currentTimeMillis
   var totalIterTime = hack - hack
-
+  println("should be zero")
+  println(totalIterTime)
   // Helper functions:
   // Accumulate sums and counts for each centroid
-  type WeightedPoint = (DoubleMatrix, Int)
+  type WeightedPoint = (DoubleMatrix, Long)
   def mergeContribs(p1: WeightedPoint, p2: WeightedPoint): WeightedPoint = {
    (p1._1.addi(p2._1), p1._2 + p2._2)
   }
 
+  // Return the index of the centroid closest to the given point
+  def findClosest(point: Array[Double]): Int = {
+    var bestDistance = Double.PositiveInfinity
+    var bestIndex = 0
 
-  def gradient(point: LabeledPoint): DoubleMatrix = {
-    val features = new DoubleMatrix(point.features)
-    val flag = point.label * params.dot(features)
-    if (flag > 1) {
-      params.mul(lambda)
-    } else {
-      params.mul(lambda).sub(features.mul(point.label))
+    for (i <- 0 until centroids.length) {
+      val distance = MLUtils.squaredDistance(point, centroids(i))
+      if (distance < bestDistance) {
+        bestDistance = distance
+        bestIndex = i
+      }
     }
+
+    bestIndex
   }
 
   def run() {
     // Run kmeans for a fixed number of iterations
-    while (iteration < numIters) {
+    while (iteration < numIterations) {
       val start = System.currentTimeMillis
-      
-      val (sum,count) = points.mapPartitions { points =>
+      // Assignment:
+      // Assign each point to the closest centroid
+      // Accumulating a sum and count per centroid
+      val totalContribs = points.mapPartitions { points =>
+        var sums = Array.fill(k)(new DoubleMatrix(dims))
+        var counts = Array.fill(k)(0L)
+
         for (point <- points) {
-          val update = gradient(point).mul(alpha)
-          params.subi(update)
+          val closestIndex = findClosest(point)
+          sums(closestIndex).addi(new DoubleMatrix(point))
+          counts(closestIndex) += 1
         }
 
-        val foo = for (j <- 0 until 1) yield {
-          (params, 1)
+        val contribs = for (j <- 0 until k) yield {
+          (j, (sums(j), counts(j)))
+        }
+        contribs.iterator
+      }.reduceByKey(mergeContribs).collectAsMap()
+
+      // Compute new centroids:
+      for (j <- 0 until k) {
+        val (sum, count) = totalContribs(j)
+        if (count != 0) {
+          val newCenter = sum.divi(count).data
+          centroids(j) = newCenter
         }
 
-        foo.iterator
-      }.reduce(mergeContribs)
-
-      // Compute new parameters
-      params = sum.divi(count)
-      
+      }
       iteration += 1
-      alpha = .95 * alpha
       val end  = System.currentTimeMillis
       val elapsed = end - start
       totalIterTime += elapsed
@@ -89,9 +85,11 @@ class SimpleSGD(xNumIters: Int, xPoints: RDD[LabeledPoint]) extends Serializable
     println("Total time after loading: ")
     println(absolute_end - absolute_start)
     println("Average iteration time")
-    println(totalIterTime / numIters) 
-    println("Params:")
-    println(params.data.mkString(","))
+    println(totalIterTime / numIterations) 
+    println("Centroids:")
+    for (centroid <- centroids) {
+      println(centroid.mkString(",")) 
+    }
   }
 
 }
@@ -101,18 +99,15 @@ object SimpleApp {
     val conf = new SparkConf()
              .setMaster("spark://192.168.0.40:7070")
              .setAppName("Simple App")
-             .setJars(List("/SparkSGD/target/scala-2.10/simple-project_2.10-1.0.jar"))
+             .setJars(List("/SparkKMeans/target/scala-2.10/simple-project_2.10-1.0.jar"))
              .setSparkHome("/software/spark-0.9.1")
              .set("spark.executor.memory", "65g")
              .set("spark.cores.max", "1")
     val sc = new SparkContext(conf)
 
-    val filePath = "hdfs://192.168.0.40:54310/josh/foolabeled.csv"
-    val points = sc.textFile(filePath).map{ line => 
-      val parts = line.split(',')
-      LabeledPoint(parts.last.toDouble, parts.init.map(x => x.toDouble).toArray)
-    }.cache()
-    val model = new SimpleSGD(10, points)
+    val filePath = "hdfs://192.168.0.40:54310/josh/foo.csv"
+    val points = sc.textFile(filePath).map( _.split(',').map(_.toDouble)).cache()
+    val model = new SimpleKMeans(5, 10, points)
     model.run
 
   }
